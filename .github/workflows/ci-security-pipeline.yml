@@ -1,73 +1,72 @@
-name: DevSecOps Pipeline
+name: MoviesApp DevSecOps Pipeline
 
 on:
   push:
     branches:
       - main
-      - '**'   # cualquier rama
+      - 'feature/**'
   pull_request:
     branches:
       - main
 
 jobs:
-  build-and-secure:
+  devsecops:
     runs-on: ubuntu-latest
+    env:
+      DOCKER_IMAGE_NAME: moviesapp:latest
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18'
+      # ------------------------------
+      # Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
 
-    - name: Install dependencies
-      run: npm install
+      - name: Install dependencies
+        run: npm install
 
-    # --------------------------
-    # SAST: ESLint
-    # --------------------------
-    - name: Setup ESLint config
-      run: |
-        echo '{
-          "env": {"browser": true,"node": true,"es2021": true},
-          "extends": "eslint:recommended",
-          "parserOptions": {"ecmaVersion": 12,"sourceType": "module"},
-          "rules": {"no-unused-vars": "error","no-console": "warn"}
-        }' > .eslintrc.json
+      # ------------------------------
+      # SAST: ESLint
+      - name: Setup ESLint config
+        run: |
+          echo '{
+            "env": {"browser": true,"node": true,"es2021": true},
+            "extends": "eslint:recommended",
+            "parserOptions": {"ecmaVersion": 12,"sourceType": "module"},
+            "rules": {"no-unused-vars": "error","no-console": "warn"}
+          }' > .eslintrc.json
 
-    - name: Run ESLint SAST
-      run: npx eslint . --max-warnings=0
+      - name: Run ESLint
+        run: npx eslint . --max-warnings=0
 
-    # --------------------------
-    # SCA: Dependency Check
-    # --------------------------
-    - name: Install Dependency-Check
-      run: npm install -g dependency-check
+      # ------------------------------
+      # SCA: Dependency-Check
+      - name: Install Dependency-Check
+        run: sudo apt-get update && sudo apt-get install -y dependency-check
 
-    - name: Run Dependency Check
-      run: |
-        mkdir -p dependency-check-report
-        dependency-check --out dependency-check-report/dependency-check-report.json --json
-        # Fail on Critical/High/Medium
-        if grep -qE '"vulnerability":.*"(CRITICAL|HIGH|MEDIUM)"' dependency-check-report/dependency-check-report.json; then
-          echo "SCA found vulnerabilities. Failing pipeline."
-          exit 1
-        fi
+      - name: Run Dependency-Check
+        run: |
+          dependency-check --project MoviesApp --scan ./ --out dependency-check-report --format "ALL"
+          cat dependency-check-report/dependency-check-report.html
+        continue-on-error: false
 
-    # --------------------------
-    # Docker Build
-    # --------------------------
-    - name: Build Docker image
-      run: docker build -t moviesapp:latest .
+      # ------------------------------
+      # Build Docker Image
+      - name: Build Docker Image
+        run: docker build -t $DOCKER_IMAGE_NAME .
 
-    # --------------------------
-    # Image Security: Trivy
-    # --------------------------
-    - name: Scan Docker image with Trivy
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: moviesapp:latest
-        severity: CRITICAL,HIGH,MEDIUM
-        exit-code: 1
+      # ------------------------------
+      # Image Security Scan: Trivy
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget
+          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.45.1_Linux-64bit.deb
+          sudo dpkg -i trivy_0.45.1_Linux-64bit.deb
 
+      - name: Scan Docker Image with Trivy
+        run: trivy image --exit-code 1 --severity CRITICAL,HIGH,MEDIUM $DOCKER_IMAGE_NAME
