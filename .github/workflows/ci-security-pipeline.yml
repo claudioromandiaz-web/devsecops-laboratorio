@@ -34,11 +34,20 @@ jobs:
           format: "ALL"
       - name: Fail if vulnerabilities found (SCA)
         run: |
-          if grep -q -E "CRITICAL|HIGH|MEDIUM" dependency-check-report.html; then
-            echo "SCA: Vulnerabilities found! Failing pipeline."
+          if [ -f dependency-check-report.html ]; then
+            if grep -q -E "CRITICAL|HIGH|MEDIUM" dependency-check-report.html; then
+              echo "SCA: Vulnerabilities found! Failing pipeline."
+              echo "---- Vulnerabilities detected ----"
+              grep -E "CRITICAL|HIGH|MEDIUM" dependency-check-report.html
+              echo "----------------------------------"
+              exit 1
+            else
+              echo "No vulnerabilities found."
+            fi
+            else
+            echo "Report file not found!"
             exit 1
-          fi
-
+           fi
       # --- Build Docker image ---
       - name: Build Docker image
         run: |
