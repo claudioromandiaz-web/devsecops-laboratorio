@@ -52,3 +52,4 @@ jobs:
           sudo dpkg -i trivy_0.45.1_Linux-64bit.deb
           trivy image --exit-code 1 --severity CRITICAL,HIGH,MEDIUM moviesapp:latest
 
+
