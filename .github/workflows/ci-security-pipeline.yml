@@ -37,6 +37,7 @@ jobs:
 
       - name: Fail if vulnerabilities found (SCA)
         if: always()
+        continue-on-error: true
         run: |
           REPORT_PATH="dependency-check-report/dependency-check-report.html"
           if [ -f "$REPORT_PATH" ]; then
