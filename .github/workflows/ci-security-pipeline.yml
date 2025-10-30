@@ -17,7 +17,6 @@ jobs:
 
       # --- SAST: SonarCloud ---
       - name: SonarCloud Scan
-        continue-on-error: true
         uses: SonarSource/sonarcloud-github-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -26,9 +25,13 @@ jobs:
             -Dsonar.organization=${{ secrets.SONAR_ORG }}
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
 
-      # --- SCA: Dependency Check ---
+      - name: Wait for SonarCloud Quality Gate
+        uses: sonarsource/sonarcloud-quality-gate-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # --- SCA: OWASP Dependency-Check ---
       - name: Run OWASP Dependency-Check
-        continue-on-error: true
         uses: dependency-check/Dependency-Check_Action@main
         with:
           project: "MoviesApp"
@@ -46,8 +49,22 @@ jobs:
             if grep -q -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
               echo "SCA: Vulnerabilities found! Failing pipeline."
               echo "---- Vulnerabilities detected ----"
-              # Limpiar comillas y considerar la 3ª columna como 'severity' y la 2ª como 'package'
-              awk -F',' '{gsub(/"/,"",$2); gsub(/"/,"",$3); if($3 ~ /CRITICAL|HIGH|MEDIUM/) print $3, $2}' "$REPORT_PATH"
+              # awk corregido: busca severidad en cualquier columna y limpia comillas
+              awk -F',' '{
+                gsub(/"/,"",$2)
+                sev=""
+                for(i=1;i<=NF;i++){
+                  f=$i
+                  gsub(/"/,"",f)
+                  if(toupper(f) ~ /CRITICAL|HIGH|MEDIUM/){
+                    sev=toupper(f)
+                    break
+                  }
+                }
+                if(sev != ""){
+                  print sev, $2
+                }
+              }' "$REPORT_PATH"
               echo "----------------------------------"
               exit 1
             else
@@ -67,7 +84,6 @@ jobs:
       # --- Image Security: Trivy Scan ---
       - name: Scan Docker image with Trivy
         if: always()
-        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: "movies-app:latest"
