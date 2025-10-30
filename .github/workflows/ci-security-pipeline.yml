@@ -36,12 +36,14 @@ jobs:
           format: "ALL"
 
       - name: Fail if vulnerabilities found (SCA)
+        if: always()
         run: |
-          if [ -f dependency-check-report.html ]; then
-            if grep -q -E "CRITICAL|HIGH|MEDIUM" dependency-check-report.html; then
+          REPORT_PATH="dependency-check-report/dependency-check-report.html"
+          if [ -f "$REPORT_PATH" ]; then
+            if grep -q -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
               echo "SCA: Vulnerabilities found! Failing pipeline."
               echo "---- Vulnerabilities detected ----"
-              grep -E "CRITICAL|HIGH|MEDIUM" dependency-check-report.html
+              grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"
               echo "----------------------------------"
               exit 1
             else
