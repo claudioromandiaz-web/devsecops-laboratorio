@@ -1,13 +1,13 @@
- name: CI - Security Pipeline
- 
- on:
+name: CI - Security Pipeline
+
+on:
   push:
     branches:
       - main
       - feature/ci-security-pipeline
   pull_request:
 
- jobs:
+jobs:
   build-and-scan:
     runs-on: ubuntu-latest
 
@@ -52,50 +52,50 @@
           echo "---------------------------------"
 
           python3 - <<'PY'
-            import csv, sys, re
-            report = "dependency-check-report/dependency-check-report.csv"
-            try:
-                with open(report, newline='', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    header = next(reader, None)
-                    if header is None:
-                        print("CSV empty or unreadable")
-                        sys.exit(1)
+import csv, sys, re
+report = "dependency-check-report/dependency-check-report.csv"
+try:
+    with open(report, newline='', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header is None:
+            print("CSV empty or unreadable")
+            sys.exit(1)
 
-                    hdr = [h.strip().lower() for h in header]
-                    sev_names = ["severity","highest severity","vulnerability severity"]
-                    pkg_names = ["package","dependency","file","file name","filename","component","identifier","module"]
+        hdr = [h.strip().lower() for h in header]
+        sev_names = ["severity","highest severity","vulnerability severity"]
+        pkg_names = ["package","dependency","file","file name","filename","component","identifier","module"]
 
-                    sev_idx = None
-                    pkg_idx = None
-                    for i, name in enumerate(hdr):
-                        if name in sev_names:
-                            sev_idx = i
-                        if name in pkg_names:
-                            pkg_idx = i
+        sev_idx = None
+        pkg_idx = None
+        for i, name in enumerate(hdr):
+            if name in sev_names:
+                sev_idx = i
+            if name in pkg_names:
+                pkg_idx = i
 
-                    if sev_idx is None or pkg_idx is None:
-                        print("No pude identificar columnas 'severity' o 'package' automáticamente.")
-                        print("Header detectado:", header)
-                        sys.exit(1)
+        if sev_idx is None or pkg_idx is None:
+            print("No pude identificar columnas 'severity' o 'package' automáticamente.")
+            print("Header detectado:", header)
+            sys.exit(1)
 
-                    found = False
-                    for row in reader:
-                        if len(row) <= max(sev_idx, pkg_idx):
-                            continue
-                        sev = str(row[sev_idx]).strip().upper()
-                        pkg = str(row[pkg_idx]).strip()
-                        if re.search(r'\b(CRITICAL|HIGH|MEDIUM)\b', sev, flags=re.I):
-                            print(f"{sev} {pkg}")
-                            found = True
+        found = False
+        for row in reader:
+            if len(row) <= max(sev_idx, pkg_idx):
+                continue
+            sev = str(row[sev_idx]).strip().upper()
+            pkg = str(row[pkg_idx]).strip()
+            if re.search(r'\b(CRITICAL|HIGH|MEDIUM)\b', sev, flags=re.I):
+                print(f"{sev} {pkg}")
+                found = True
 
-                    if not found:
-                        print("No se encontraron CRITICAL/HIGH/MEDIUM luego de parseo robusto.")
-                        sys.exit(1)
-            except Exception as e:
-                print("Error parsing CSV:", e)
-                sys.exit(1)
-          PY
+        if not found:
+            print("No se encontraron CRITICAL/HIGH/MEDIUM luego de parseo robusto.")
+            sys.exit(1)
+except Exception as e:
+    print("Error parsing CSV:", e)
+    sys.exit(1)
+PY
 
           if [ $? -ne 0 ]; then
             echo "SCA: Vulnerabilities found or parsing error — failing step."
@@ -118,3 +118,4 @@
           format: "table"
           exit-code: "1"
           severity: "CRITICAL,HIGH,MEDIUM"
+
