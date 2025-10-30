@@ -1,4 +1,4 @@
-name: CI - Security Pipeline (Self-contained)
+name: CI - Security Pipeline (self-contained)
 
 on:
   push:
@@ -14,12 +14,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Run SAST (Simulated)
+      - name: SAST (simulated) - fail for evidence
         run: |
-          echo "=== SAST ==="
-          echo "Simulating code analysis..."
-          echo "CRITICAL issue found in app.js"
-          echo "::error::SAST found CRITICAL/HIGH/MEDIUM vulnerabilities"
+          echo "=== SAST (simulated) ==="
+          echo "Simulating SonarCloud-style SAST failure..."
+          echo "::error::SAST detected CRITICAL/HIGH/MEDIUM issues in code"
+          echo "CRITICAL app/secrets.js: hardcoded-secret"
+          echo "HIGH src/unsafe.js: insecure-eval"
+          echo "MEDIUM lib/util.js: weak-validation"
           exit 1
 
   sca:
@@ -30,7 +32,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Create fake dependency-check CSV (no quotes in header)
+      - name: Create fake dependency-check CSV
         run: |
           mkdir -p dependency-check-report
           cat > dependency-check-report/dependency-check-report.csv <<'CSV'
@@ -40,7 +42,7 @@ jobs:
           body-parser:1.19.2,MEDIUM
           CSV
 
-      - name: Parse vulnerabilities and fail
+      - name: Parse CSV and print vulnerabilities (expected format)
         run: |
           echo "=== SCA Results ==="
           python3 - <<'PY'
@@ -54,9 +56,15 @@ with open(report, newline='', encoding='utf-8') as f:
         pkg = row.get("DependencyName","").strip()
         if sev in ("CRITICAL","HIGH","MEDIUM"):
             vulns.append((sev, pkg))
+# Print exactly the expected format
 for sev, pkg in vulns:
     print(f"{sev} {pkg}")
+# write evidence file
 if vulns:
+    with open("sca_vulns.txt","w",encoding="utf-8") as out:
+        for sev, pkg in vulns:
+            out.write(f"{sev} {pkg}\n")
+    # fail step to produce evidence as required
     sys.exit(1)
 else:
     sys.exit(0)
@@ -70,10 +78,10 @@ PY
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Create Dockerfile
+      - name: Create minimal Dockerfile
         run: |
-          echo "FROM alpine:3.18" > Dockerfile
-          echo "RUN echo 'Hello from container' > /hello.txt" >> Dockerfile
+          echo 'FROM alpine:3.18' > Dockerfile
+          echo 'RUN echo "hello" > /hello.txt' >> Dockerfile
           echo 'CMD ["cat","/hello.txt"]' >> Dockerfile
 
       - name: Build Docker image
@@ -81,9 +89,9 @@ PY
 
       - name: Simulate Trivy scan (force fail)
         run: |
-          echo "=== IMAGE SCAN ==="
-          echo "CRITICAL CVE-2025-0001 found in libc"
-          echo "HIGH CVE-2024-1111 found in busybox"
-          echo "MEDIUM CVE-2023-2222 found in apk-tools"
-          echo "::error::Image scan found CRITICAL/HIGH/MEDIUM vulnerabilities"
+          echo "=== IMAGE SCAN (simulated) ==="
+          echo "CRITICAL CVE-2025-0001 - libc"
+          echo "HIGH CVE-2024-1111 - busybox"
+          echo "MEDIUM CVE-2023-2222 - apk-tools"
+          echo "::error::Image security detected CRITICAL/HIGH/MEDIUM - failing as required"
           exit 1
