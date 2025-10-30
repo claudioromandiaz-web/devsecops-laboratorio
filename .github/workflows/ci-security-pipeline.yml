@@ -33,23 +33,19 @@ jobs:
         with:
           project: "MoviesApp"
           path: "."
-          format: "HTML"
+          format: "CSV"
           out: "dependency-check-report"
 
       - name: Fail if vulnerabilities found (SCA)
         if: always()
         continue-on-error: true
         run: |
-          REPORT_PATH="dependency-check-report/dependency-check-report.html"
+          REPORT_PATH="dependency-check-report/dependency-check-report.csv"
           if [ -f "$REPORT_PATH" ]; then
             if grep -q -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
               echo "SCA: Vulnerabilities found! Failing pipeline."
               echo "---- Vulnerabilities detected ----"
-              grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH" \
-                | sed 's/<[^>]*>//g' \
-                | sed 's/&nbsp;/ /g' \
-                | tr -s ' ' \
-                | grep -E "(CRITICAL|HIGH|MEDIUM).*npm"
+              awk -F',' '/CRITICAL|HIGH|MEDIUM/ {print $2, $3, $4}' "$REPORT_PATH"
               echo "----------------------------------"
               exit 1
             else
