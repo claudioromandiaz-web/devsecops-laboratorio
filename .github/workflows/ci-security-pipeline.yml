@@ -45,7 +45,11 @@ jobs:
             if grep -q -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
               echo "SCA: Vulnerabilities found! Failing pipeline."
               echo "---- Vulnerabilities detected ----"
-              grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH" | sed 's/<[^>]*>//g'
+              grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH" \
+                | sed 's/<[^>]*>//g' \
+                | sed 's/&nbsp;/ /g' \
+                | tr -s ' ' \
+                | awk '{print $1, $2, $3}'
               echo "----------------------------------"
               exit 1
             else
