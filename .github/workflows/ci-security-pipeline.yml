@@ -34,6 +34,7 @@ jobs:
           project: "MoviesApp"
           path: "."
           format: "HTML"
+          out: "dependency-check-report"
 
       - name: Fail if vulnerabilities found (SCA)
         if: always()
