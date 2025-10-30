@@ -36,10 +36,9 @@ jobs:
           format: "CSV"
           out: "dependency-check-report"
 
-      # --- SCA: Fail if vulnerabilities found (robusto awk) ---
+      # --- SCA: Fail if vulnerabilities found ---
       - name: Fail if vulnerabilities found (SCA)
         if: always()
-        # Si quieres que el job FALLE el pipeline, quita continue-on-error: true. 
         continue-on-error: true
         run: |
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
@@ -52,60 +51,31 @@ jobs:
           head -n 6 "$REPORT_PATH" || true
           echo "---------------------------------"
 
-          # awk robusto: usa FS = '","' para respetar comillas; detecta índice de severity y package en header
-          awk -v RS="\n" -v ORS="\n" -F'\",\"' '
+          awk -F'","' '
           BEGIN {
             IGNORECASE=1
             found=0
           }
           NR==1 {
-            # limpiar comillas iniciales/ final en cada campo del header
+            # Guardar índices de todas las columnas con "severity"
             for(i=1;i<=NF;i++){
               h = $i
               gsub(/^"|"$/, "", h)
-              header[i]=tolower(h)
-              # detectar columnas de interés
-              if(header[i] ~ /severity/) sev_idx = i
-              if(header[i] ~ /package/ || header[i] ~ /dependency/ || header[i] ~ /name/ || header[i] ~ /product/) pkg_idx = i
+              if(h ~ /severity/) sev_cols[i]=1
+              if(h ~ /package|dependency|name|product/) pkg_col=i
             }
             next
           }
           {
-            # limpiar comillas iniciales/finales en todos los campos (sólo cuando imprimamos)
-            # obtener severity val: si sev_idx no detectado, buscar en todos los campos
-            severity=""
-            if(sev_idx){
-              sev_field = $sev_idx
-              gsub(/^"|"$/, "", sev_field)
-              if(toupper(sev_field) ~ /(CRITICAL|HIGH|MEDIUM)/) severity = toupper(sev_field)
-            } 
-            if(!severity){
-              for(i=1;i<=NF;i++){
-                fld = $i
-                gsub(/^"|"$/, "", fld)
-                if(toupper(fld) ~ /(CRITICAL|HIGH|MEDIUM)/){ severity = toupper(fld); break }
+            for(i in sev_cols){
+              sev = $i
+              gsub(/^"|"$/, "", sev)
+              if(sev ~ /(CRITICAL|HIGH|MEDIUM)/i){
+                pkg = $pkg_col
+                gsub(/^"|"$/, "", pkg)
+                print toupper(sev), pkg
+                found=1
               }
-            }
-            # obtener package field (prefer pkg_idx, si no heurística)
-            pkg_val = ""
-            if(pkg_idx){
-              pkg_val = $pkg_idx
-              gsub(/^"|"$/, "", pkg_val)
-            } else {
-              # heurística: buscar campo que contenga "pkg:" or an @name or looks like name@version
-              for(i=1;i<=NF;i++){
-                v = $i
-                gsub(/^"|"$/, "", v)
-                if(v ~ /pkg:|@|[a-z0-9_.-]+@[0-9]/){
-                  pkg_val = v
-                  break
-                }
-              }
-            }
-
-            if(severity != "" && pkg_val != ""){
-              print severity " " pkg_val
-              found=1
             }
           }
           END {
@@ -113,15 +83,12 @@ jobs:
             else exit 0
           }' "$REPORT_PATH" | tee sca_vulns.txt || true
 
-          # Si sca_vulns.txt no está vacío, mostramos y fallamos (exit 1) para cumplir la consigna.
           if [ -s sca_vulns.txt ]; then
             echo "SCA: Vulnerabilities found! (listed below)"
             cat sca_vulns.txt
-            # Para mantener el comportamiento que tenías: el step podría continuar si continue-on-error: true está presente.
-            # Si quieres que el pipeline se detenga, reemplaza el siguiente 'exit 0' por 'exit 1' o quita continue-on-error.
-            exit 0
+            exit 1
           else
-            echo "No CRITICAL/HIGH/MEDIUM vulnerabilities parsed by awk."
+            echo "No CRITICAL/HIGH/MEDIUM vulnerabilities found."
             exit 0
           fi
 
@@ -141,4 +108,3 @@ jobs:
           format: "table"
           exit-code: "1"
           severity: "CRITICAL,HIGH,MEDIUM"
-
