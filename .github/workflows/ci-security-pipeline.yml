@@ -17,7 +17,6 @@ jobs:
 
       # --- SAST: SonarCloud ---
       - name: SonarCloud Scan
-        continue-on-error: true
         uses: SonarSource/sonarcloud-github-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -26,9 +25,13 @@ jobs:
             -Dsonar.organization=${{ secrets.SONAR_ORG }}
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
 
-      # --- SCA: Dependency Check ---
+      - name: Wait for SonarCloud Quality Gate
+        uses: sonarsource/sonarcloud-quality-gate-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # --- SCA: OWASP Dependency-Check ---
       - name: Run OWASP Dependency-Check
-        continue-on-error: true
         uses: dependency-check/Dependency-Check_Action@main
         with:
           project: "MoviesApp"
@@ -36,25 +39,79 @@ jobs:
           format: "CSV"
           out: "dependency-check-report"
 
+      # Robust SCA parser & fail-on-severity (dynamic column detection)
       - name: Fail if vulnerabilities found (SCA)
         if: always()
-        continue-on-error: true
         run: |
+          set -eo pipefail
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
-          if [ -f "$REPORT_PATH" ]; then
-          if grep -q -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
-          echo "SCA: Vulnerabilities found! Failing pipeline."
-          echo "---- Vulnerabilities detected ----"
-          awk -F',' '{gsub(/"/,"",$2); gsub(/"/,"",$3); if($3 ~ /CRITICAL|HIGH|MEDIUM/) print $3, $2}' "$REPORT_PATH"
-          echo "----------------------------------"
-          exit 1
-          else
-          echo "No vulnerabilities found."
+
+          echo "Looking for report at: $REPORT_PATH"
+          if [ ! -f "$REPORT_PATH" ]; then
+            echo "Report file not found!"
+            exit 1
           fi
-          else
-          echo "Report file not found!"
-          exit 1
+
+          echo "---- First 20 lines of the CSV (for debugging) ----"
+          head -n 20 "$REPORT_PATH" || true
+          echo "---------------------------------------------------"
+
+          # Detect indices of severity and package columns from header (case-insensitive)
+          header=$(head -n 1 "$REPORT_PATH" | sed 's/^"\|"$//g')
+          IFS=',' read -r -a cols <<< "$header"
+
+          sev_idx=0
+          pkg_idx=0
+          for i in "${!cols[@]}"; do
+            col=$(echo "${cols[$i]}" | tr '[:upper:]' '[:lower:]' | sed 's/"//g' | xargs)
+            if [ "$col" = "severity" ] || [ "$col" = "highest severity" ] || [ "$col" = "vulnerability severity" ]; then
+              sev_idx=$((i+1))
+            fi
+            if [ "$col" = "package" ] || [ "$col" = "dependency" ] || [ "$col" = "file" ] || [ "$col" = "file name" ] || [ "$col" = "filename" ]; then
+              pkg_idx=$((i+1))
+            fi
+          done
+
+          if [ $sev_idx -eq 0 ] || [ $pkg_idx -eq 0 ]; then
+            echo "No pude identificar columnas 'severity' o 'package' en el header. Header was:"
+            echo "$header"
+            exit 1
           fi
+
+          echo "Detected severity column index: $sev_idx"
+          echo "Detected package column index: $pkg_idx"
+
+          # Filter and print vulnerabilities (exit with non-zero if found)
+          awk -v SEV_IDX="$sev_idx" -v PKG_IDX="$pkg_idx" -F',' '
+            NR==1 {next}
+            {
+              gsub(/"/, "", $SEV_IDX);
+              gsub(/"/, "", $PKG_IDX);
+              sev = toupper($SEV_IDX);
+              pkg = $PKG_IDX;
+              if (sev ~ /CRITICAL|HIGH|MEDIUM/) {
+                print sev " " pkg;
+                found=1
+              }
+            }
+            END { if(found) exit 2; else exit 0 }
+          ' "$REPORT_PATH" | tee sca_vulns.txt || true
+
+          if [ -s sca_vulns.txt ]; then
+            echo "SCA: Vulnerabilities found! Failing pipeline."
+            cat sca_vulns.txt
+            exit 1
+          else
+            echo "No CRITICAL/HIGH/MEDIUM vulnerabilities found."
+          fi
+
+      # Upload dependency-check report as artifact (siempre)
+      - name: Upload SCA report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: dependency-check-report
 
       # --- Build Docker image ---
       - name: Build Docker image
@@ -65,10 +122,42 @@ jobs:
       # --- Image Security: Trivy Scan ---
       - name: Scan Docker image with Trivy
         if: always()
-        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: "movies-app:latest"
-          format: "table"
+          format: "json"
           exit-code: "1"
           severity: "CRITICAL,HIGH,MEDIUM"
+          output: "trivy-report.json"
+
+      # Upload Trivy report artifact (siempre)
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.json
+
+      # Optional: collect Docker image (tar) for forensic evidence (siempre)
+      - name: Save Docker image tar
+        if: always()
+        run: |
+          docker save movies-app:latest -o movies-app-latest.tar || true
+      - name: Upload Docker image tar
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-tar
+          path: movies-app-latest.tar
+
+      # Upload full workflow logs / other artifacts if needed
+      - name: Upload additional logs (optional)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-logs
+          path: |
+            sca_vulns.txt
+            trivy-report.json
+            dependency-check-report/dependency-check-report.csv
+
