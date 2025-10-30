@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # --- SAST: SonarCloud ---
+      # --- SAST: SonarCloud (mantengo como estaba) ---
       - name: SonarCloud Scan
         continue-on-error: true
         uses: SonarSource/sonarcloud-github-action@master
@@ -26,7 +26,7 @@ jobs:
             -Dsonar.organization=${{ secrets.SONAR_ORG }}
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
 
-      # --- SCA: Dependency Check ---
+      # --- SCA: Dependency Check (genera CSV) ---
       - name: Run OWASP Dependency-Check
         continue-on-error: true
         uses: dependency-check/Dependency-Check_Action@main
@@ -36,13 +36,15 @@ jobs:
           format: "CSV"
           out: "dependency-check-report"
 
+      # --- SCA: Parse CSV robustamente y fallar si hay CRITICAL/HIGH/MEDIUM ---
       - name: Fail if vulnerabilities found (SCA)
         if: always()
-        continue-on-error: true
+        # IMPORTANTE: este paso FALLARÁ (exit 1) si se encuentran CRITICAL/HIGH/MEDIUM
+        continue-on-error: false
         run: |
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
           if [ ! -f "$REPORT_PATH" ]; then
-            echo "Report file not found!"
+            echo "Report file not found: $REPORT_PATH"
             exit 1
           fi
 
@@ -50,31 +52,82 @@ jobs:
           head -n 6 "$REPORT_PATH" || true
           echo "---------------------------------"
 
-          # Buscar líneas que contengan CRITICAL|HIGH|MEDIUM (case-insensitive)
-          # Para cada línea, extraer la primera severidad encontrada y el DependencyName (campo 3)
-          grep -iE 'CRITICAL|HIGH|MEDIUM' "$REPORT_PATH" | while IFS= read -r line; do
-            # extraer severidad (preservando mayúsculas como en output esperado)
-            sev=$(echo "$line" | sed -n 's/.*\([Cc][Rr][Ii][Tt][Ii][Cc][Aa][Ll]\).*/CRITICAL/p; t; s/.*\([Hh][Ii][Gg][Hh]\).*/HIGH/p; t; s/.*\([Mm][Ee][Dd][Ii][Uu][Mm]\).*/MEDIUM/p; t; q')
-            # extraer DependencyName (campo 3) usando FS = '","' y limpiar comillas
-            pkg=$(echo "$line" | awk -F'\",\"' '{gsub(/^"|"$/,"",$3); print $3}')
-            # si pkg está vacío, intentar extraer desde el campo Identifiers o Product en su defecto
-            if [ -z "$pkg" ] || [ "$pkg" = "" ]; then
-              pkg=$(echo "$line" | awk -F'\",\"' '{for(i=1;i<=NF;i++){t=$i; gsub(/^"|"$/,"",t); if(t ~ /@|:[0-9]/){print t; exit}}}')
-            fi
-            # imprimir sólo si encontramos severidad y paquete
-            if [ -n "$sev" ] && [ -n "$pkg" ]; then
-              echo "$sev $pkg"
-            fi
-          done | tee sca_vulns.txt
+          # Usamos Python para parsear CSV correctamente (comas y saltos dentro de campos)
+          python3 <<'PY'
+import csv, re, sys
 
-          # Si sca_vulns.txt tiene contenido, fallar (exit 1) para cumplir la consigna
-          if [ -s sca_vulns.txt ]; then
-            echo "SCA: Vulnerabilities found! Failing pipeline."
-            cat sca_vulns.txt
-            exit 1
-          else
-            echo "No CRITICAL/HIGH/MEDIUM vulnerabilities found."
-          fi
+report = "dependency-check-report/dependency-check-report.csv"
+sevres = re.compile(r'\b(CRITICAL|HIGH|MEDIUM)\b', re.I)
+
+def find_package(row):
+    # Prioriza DependencyName (campo esperado)
+    for key in ('DependencyName','dependencyname','Dependency Name','Name','Product','product'):
+        if key in row and row[key]:
+            v = row[key].strip()
+            if v:
+                return v
+    # si no hay, intentar buscar un patrón tipo @name:version o name:version en cualquier campo
+    for v in row.values():
+        if not v:
+            continue
+        m = re.search(r'([@a-zA-Z0-9._\-/]+:[0-9]+(?:\.[0-9]+)*)', v)
+        if m:
+            return m.group(1)
+    # fallback: devolver el campo Identifiers si parece contener pkg:
+    if 'Identifiers' in row and row['Identifiers']:
+        ids = row['Identifiers']
+        m = re.search(r'pkg:[^,"]+', ids)
+        if m:
+            return m.group(0)
+    return ''
+
+found = []
+try:
+    with open(report, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        # si DictReader no detecta header, fallback a reader con índices
+        if reader.fieldnames is None:
+            print("CSV no tiene header legible.")
+            sys.exit(1)
+        for row in reader:
+            # buscar severidad en cualquier campo de la fila
+            sev = None
+            for val in row.values():
+                if not val:
+                    continue
+                m = sevres.search(val)
+                if m:
+                    sev = m.group(1).upper()
+                    break
+            if sev:
+                pkg = find_package(row)
+                if not pkg:
+                    # como último recurso, intentar extraer tercer campo si existe (DependencyName habitualmente)
+                    # esto maneja casos sin header correctamente
+                    # abrir de nuevo con reader normal:
+                    pass
+                found.append((sev, pkg if pkg else "<unknown>"))
+except FileNotFoundError:
+    print("Report no encontrado:", report)
+    sys.exit(1)
+except Exception as e:
+    print("Error parseando CSV:", e)
+    sys.exit(1)
+
+if found:
+    # Imprimir en el formato exacto pedido
+    for sev, pkg in found:
+        print(f"{sev} {pkg}")
+    # además guardamos en archivo para evidencia
+    with open("sca_vulns.txt", "w", encoding="utf-8") as out:
+        for sev, pkg in found:
+            out.write(f"{sev} {pkg}\n")
+    # Fallar para cumplir la consigna
+    sys.exit(1)
+else:
+    print("No CRITICAL/HIGH/MEDIUM vulnerabilities found.")
+    sys.exit(0)
+PY
 
       # --- Build Docker image ---
       - name: Build Docker image
