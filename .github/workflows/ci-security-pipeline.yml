@@ -15,6 +15,12 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
+    # Instalar jq para parsear JSON
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+
     # --- SAST: SonarCloud ---
     - name: SonarCloud Scan
       uses: SonarSource/sonarcloud-github-action@master
@@ -48,17 +54,15 @@ jobs:
     - name: Fail if vulnerabilities found (SCA)
       run: |
         REPORT_PATH="dependency-check-report/dependency-check-report.csv"
-        if [ -f "$REPORT_PATH" ]; then
-          echo "---- Vulnerabilities detected ----"
-          awk -F',' 'NR>1 {gsub(/"/,"",$2); gsub(/"/,"",$12); if($12 ~ /CRITICAL|HIGH|MEDIUM/) print $12, $2}' "$REPORT_PATH"
-          if awk -F',' 'NR>1 {gsub(/"/,"",$12); if($12 ~ /CRITICAL|HIGH|MEDIUM/) exit 1}' "$REPORT_PATH"; then
-            exit 1
-          fi
-          echo "----------------------------------"
-        else
+        if [ ! -f "$REPORT_PATH" ]; then
           echo "Report file not found!"
           exit 1
         fi
+
+        echo "---- Vulnerabilities detected ----"
+        awk -F',' 'NR>1 {gsub(/"/,"",$2); gsub(/"/,"",$12); if($12 ~ /CRITICAL|HIGH|MEDIUM/) print $12, $2}' "$REPORT_PATH"
+        awk -F',' 'NR>1 {gsub(/"/,"",$12); if($12 ~ /CRITICAL|HIGH|MEDIUM/) exit 1}' "$REPORT_PATH" && exit 1
+        echo "----------------------------------"
 
     # --- Build Docker image ---
     - name: Build Docker image
@@ -72,3 +76,4 @@ jobs:
         format: "table"
         exit-code: "1"
         severity: "CRITICAL,HIGH,MEDIUM"
+
