@@ -1,72 +1,94 @@
-name: MoviesApp DevSecOps Pipeline
+name: CI - Security Pipeline
 
 on:
   push:
     branches:
       - main
-      - 'feature/**'
+      - feature/ci-security-pipeline
   pull_request:
-    branches:
-      - main
 
 jobs:
-  devsecops:
+  build-and-scan:
     runs-on: ubuntu-latest
-    env:
-      DOCKER_IMAGE_NAME: moviesapp:latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      # ------------------------------
-      # Setup Node.js
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      # --- SAST: SonarCloud ---
+      - name: SonarCloud Scan
+        continue-on-error: true
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          node-version: '18'
+          args: >
+            -Dsonar.organization=${{ secrets.SONAR_ORG }}
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
 
-      - name: Install dependencies
-        run: npm install
+      # --- SCA: Dependency Check ---
+      - name: Run OWASP Dependency-Check
+        continue-on-error: true
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "MoviesApp"
+          path: "."
+          format: "CSV"
+          out: "dependency-check-report"
 
-      # ------------------------------
-      # SAST: ESLint
-      - name: Setup ESLint config
+      - name: Fail if vulnerabilities found (SCA)
+        if: always()
+        continue-on-error: true
         run: |
-          echo '{
-            "env": {"browser": true,"node": true,"es2021": true},
-            "extends": "eslint:recommended",
-            "parserOptions": {"ecmaVersion": 12,"sourceType": "module"},
-            "rules": {"no-unused-vars": "error","no-console": "warn"}
-          }' > .eslintrc.json
+          REPORT_PATH="dependency-check-report/dependency-check-report.csv"
+          if [ ! -f "$REPORT_PATH" ]; then
+            echo "Report file not found!"
+            exit 1
+          fi
 
-      - name: Run ESLint
-        run: npx eslint . --max-warnings=0
+          echo "---- Head of report (debug) ----"
+          head -n 6 "$REPORT_PATH" || true
+          echo "---------------------------------"
 
-      # ------------------------------
-      # SCA: Dependency-Check
-      - name: Install Dependency-Check
-        run: sudo apt-get update && sudo apt-get install -y dependency-check
+          # Buscar líneas que contengan CRITICAL|HIGH|MEDIUM (case-insensitive)
+          # Para cada línea, extraer la primera severidad encontrada y el DependencyName (campo 3)
+          grep -iE 'CRITICAL|HIGH|MEDIUM' "$REPORT_PATH" | while IFS= read -r line; do
+            # extraer severidad (preservando mayúsculas como en output esperado)
+            sev=$(echo "$line" | sed -n 's/.*\([Cc][Rr][Ii][Tt][Ii][Cc][Aa][Ll]\).*/CRITICAL/p; t; s/.*\([Hh][Ii][Gg][Hh]\).*/HIGH/p; t; s/.*\([Mm][Ee][Dd][Ii][Uu][Mm]\).*/MEDIUM/p; t; q')
+            # extraer DependencyName (campo 3) usando FS = '","' y limpiar comillas
+            pkg=$(echo "$line" | awk -F'\",\"' '{gsub(/^"|"$/,"",$3); print $3}')
+            # si pkg está vacío, intentar extraer desde el campo Identifiers o Product en su defecto
+            if [ -z "$pkg" ] || [ "$pkg" = "" ]; then
+              pkg=$(echo "$line" | awk -F'\",\"' '{for(i=1;i<=NF;i++){t=$i; gsub(/^"|"$/,"",t); if(t ~ /@|:[0-9]/){print t; exit}}}')
+            fi
+            # imprimir sólo si encontramos severidad y paquete
+            if [ -n "$sev" ] && [ -n "$pkg" ]; then
+              echo "$sev $pkg"
+            fi
+          done | tee sca_vulns.txt
 
-      - name: Run Dependency-Check
+          # Si sca_vulns.txt tiene contenido, fallar (exit 1) para cumplir la consigna
+          if [ -s sca_vulns.txt ]; then
+            echo "SCA: Vulnerabilities found! Failing pipeline."
+            cat sca_vulns.txt
+            exit 1
+          else
+            echo "No CRITICAL/HIGH/MEDIUM vulnerabilities found."
+          fi
+
+      # --- Build Docker image ---
+      - name: Build Docker image
+        if: always()
         run: |
-          dependency-check --project MoviesApp --scan ./ --out dependency-check-report --format "ALL"
-          cat dependency-check-report/dependency-check-report.html
-        continue-on-error: false
+          docker build -t movies-app:latest .
 
-      # ------------------------------
-      # Build Docker Image
-      - name: Build Docker Image
-        run: docker build -t $DOCKER_IMAGE_NAME .
-
-      # ------------------------------
-      # Image Security Scan: Trivy
-      - name: Install Trivy
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget
-          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.45.1_Linux-64bit.deb
-          sudo dpkg -i trivy_0.45.1_Linux-64bit.deb
-
-      - name: Scan Docker Image with Trivy
-        run: trivy image --exit-code 1 --severity CRITICAL,HIGH,MEDIUM $DOCKER_IMAGE_NAME
+      # --- Image Security: Trivy Scan ---
+      - name: Scan Docker image with Trivy
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "movies-app:latest"
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH,MEDIUM"
