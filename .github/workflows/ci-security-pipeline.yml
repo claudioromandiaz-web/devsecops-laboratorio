@@ -1,13 +1,13 @@
-name: CI - Security Pipeline
-
-on:
+ name: CI - Security Pipeline
+ 
+ on:
   push:
     branches:
       - main
       - feature/ci-security-pipeline
   pull_request:
 
-jobs:
+ jobs:
   build-and-scan:
     runs-on: ubuntu-latest
 
@@ -36,38 +36,69 @@ jobs:
           format: "CSV"
           out: "dependency-check-report"
 
+      # --- SCA: Fail if vulnerabilities found ---
       - name: Fail if vulnerabilities found (SCA)
         if: always()
         continue-on-error: true
         run: |
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
-          if [ -f "$REPORT_PATH" ]; then
-            if grep -q -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
-              echo "SCA: Vulnerabilities found! Failing pipeline."
-              echo "---- Vulnerabilities detected ----"
-              # awk corregido: limpia comillas y busca severidad en todas las columnas
-              awk -F',' '{
-                gsub(/"/,"",$2)
-                sev=""
-                for(i=1;i<=NF;i++){
-                  f=$i
-                  gsub(/"/,"",f)
-                  if(toupper(f) ~ /CRITICAL|HIGH|MEDIUM/){
-                    sev=toupper(f)
-                    break
-                  }
-                }
-                if(sev != ""){
-                  print sev, $2
-                }
-              }' "$REPORT_PATH"
-              echo "----------------------------------"
-              exit 1
-            else
-              echo "No vulnerabilities found."
-            fi
-          else
+          if [ ! -f "$REPORT_PATH" ]; then
             echo "Report file not found!"
+            exit 1
+          fi
+
+          echo "---- Head of report (debug) ----"
+          head -n 10 "$REPORT_PATH" || true
+          echo "---------------------------------"
+
+          python3 - <<'PY'
+            import csv, sys, re
+            report = "dependency-check-report/dependency-check-report.csv"
+            try:
+                with open(report, newline='', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    header = next(reader, None)
+                    if header is None:
+                        print("CSV empty or unreadable")
+                        sys.exit(1)
+
+                    hdr = [h.strip().lower() for h in header]
+                    sev_names = ["severity","highest severity","vulnerability severity"]
+                    pkg_names = ["package","dependency","file","file name","filename","component","identifier","module"]
+
+                    sev_idx = None
+                    pkg_idx = None
+                    for i, name in enumerate(hdr):
+                        if name in sev_names:
+                            sev_idx = i
+                        if name in pkg_names:
+                            pkg_idx = i
+
+                    if sev_idx is None or pkg_idx is None:
+                        print("No pude identificar columnas 'severity' o 'package' automáticamente.")
+                        print("Header detectado:", header)
+                        sys.exit(1)
+
+                    found = False
+                    for row in reader:
+                        if len(row) <= max(sev_idx, pkg_idx):
+                            continue
+                        sev = str(row[sev_idx]).strip().upper()
+                        pkg = str(row[pkg_idx]).strip()
+                        if re.search(r'\b(CRITICAL|HIGH|MEDIUM)\b', sev, flags=re.I):
+                            print(f"{sev} {pkg}")
+                            found = True
+
+                    if not found:
+                        print("No se encontraron CRITICAL/HIGH/MEDIUM luego de parseo robusto.")
+                        sys.exit(1)
+            except Exception as e:
+                print("Error parsing CSV:", e)
+                sys.exit(1)
+          PY
+
+          if [ $? -ne 0 ]; then
+            echo "SCA: Vulnerabilities found or parsing error — failing step."
             exit 1
           fi
 
