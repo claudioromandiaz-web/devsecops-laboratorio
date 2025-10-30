@@ -51,7 +51,7 @@ jobs:
           head -n 10 "$REPORT_PATH" || true
           echo "---------------------------------"
 
-          python3 - <<'PY'
+          python3 <<PYTHON
 import csv, sys, re
 report = "dependency-check-report/dependency-check-report.csv"
 try:
@@ -95,7 +95,7 @@ try:
 except Exception as e:
     print("Error parsing CSV:", e)
     sys.exit(1)
-PY
+PYTHON
 
           if [ $? -ne 0 ]; then
             echo "SCA: Vulnerabilities found or parsing error — failing step."
@@ -118,4 +118,3 @@ PY
           format: "table"
           exit-code: "1"
           severity: "CRITICAL,HIGH,MEDIUM"
-
