@@ -51,37 +51,8 @@ jobs:
           head -n 6 "$REPORT_PATH" || true
           echo "---------------------------------"
 
-          awk -F'","' '
-          BEGIN {
-            IGNORECASE=1
-            found=0
-          }
-          NR==1 {
-            # Guardar índices de todas las columnas con "severity"
-            for(i=1;i<=NF;i++){
-              h = $i
-              gsub(/^"|"$/, "", h)
-              if(h ~ /severity/) sev_cols[i]=1
-              if(h ~ /package|dependency|name|product/) pkg_col=i
-            }
-            next
-          }
-          {
-            for(i in sev_cols){
-              sev = $i
-              gsub(/^"|"$/, "", sev)
-              if(sev ~ /(CRITICAL|HIGH|MEDIUM)/i){
-                pkg = $pkg_col
-                gsub(/^"|"$/, "", pkg)
-                print toupper(sev), pkg
-                found=1
-              }
-            }
-          }
-          END {
-            if(found) exit 1
-            else exit 0
-          }' "$REPORT_PATH" | tee sca_vulns.txt || true
+          # Buscar CRITICAL/HIGH/MEDIUM en TODO el CSV
+          grep -E 'CRITICAL|HIGH|MEDIUM' "$REPORT_PATH" | tee sca_vulns.txt || true
 
           if [ -s sca_vulns.txt ]; then
             echo "SCA: Vulnerabilities found! (listed below)"
@@ -108,3 +79,4 @@ jobs:
           format: "table"
           exit-code: "1"
           severity: "CRITICAL,HIGH,MEDIUM"
+
