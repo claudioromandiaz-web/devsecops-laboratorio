@@ -1,82 +1,92 @@
-name: CI - Security Pipeline
+name: Movies CI/CD Security Pipeline
 
 on:
   push:
     branches:
       - main
-      - feature/ci-security-pipeline
   pull_request:
 
 jobs:
-  build-and-scan:
+  full-pipeline:
     runs-on: ubuntu-latest
+    env:
+      DOCKER_IMAGE: movies-app:latest
 
     steps:
-      - name: Checkout code
+      # 1️⃣ Clonar repositorio
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      # --- SAST: SonarCloud ---
-      - name: SonarCloud Scan
-        continue-on-error: true
+      # 2️⃣ SAST (SonarCloud)
+      - name: Set up SonarCloud
         uses: SonarSource/sonarcloud-github-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.organization=${{ secrets.SONAR_ORG }}
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.projectKey=devsecops-laboratorio
+            -Dsonar.organization=your-org
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
-      # --- SCA: OWASP Dependency-Check ---
-      - name: Run OWASP Dependency-Check
-        continue-on-error: true
-        uses: dependency-check/Dependency-Check_Action@main
+      # Fail if SAST finds CRITICAL/HIGH/MEDIUM
+      # SonarCloud nativamente puede marcar fallos en Quality Gate
+
+      # 3️⃣ SCA (Dependency Check)
+      - name: Set up Java
+        uses: actions/setup-java@v3
         with:
-          project: "MoviesApp"
-          path: "."
-          format: "CSV"
-          out: "dependency-check-report"
+          distribution: temurin
+          java-version: 17
 
-      # --- SCA: Fail if vulnerabilities found ---
-      - name: Fail if vulnerabilities found (SCA)
-        if: always()
-        continue-on-error: true
+      - name: Install dependency-check CLI
         run: |
-          REPORT_PATH="dependency-check-report/dependency-check-report.csv"
-          if [ ! -f "$REPORT_PATH" ]; then
-            echo "Report file not found!"
-            exit 1
-          fi
+          wget https://github.com/jeremylong/DependencyCheck/releases/download/v8.3.1/dependency-check-8.3.1-release.zip
+          unzip dependency-check-8.3.1-release.zip -d dependency-check
+          chmod +x dependency-check/dependency-check.sh
 
-          echo "---- Head of report (debug) ----"
-          head -n 6 "$REPORT_PATH" || true
-          echo "---------------------------------"
+      - name: Run dependency-check
+        run: |
+          ./dependency-check/dependency-check.sh --project MoviesApp \
+            --scan ./functions \
+            --format "CSV" \
+            --out ./dependency-check-report
 
-          # Buscar CRITICAL/HIGH/MEDIUM en TODO el CSV
-          grep -E 'CRITICAL|HIGH|MEDIUM' "$REPORT_PATH" | tee sca_vulns.txt || true
+      - name: Fail if vulnerabilities found (Dependency Check)
+        run: |
+          python3 - << 'EOF'
+          import csv
+          import sys
+          REPORT_PATH = "dependency-check-report/dependency-check-report.csv"
+          SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM"}
+          with open(REPORT_PATH, newline='', encoding='utf-8') as csvfile:
+              reader = csv.DictReader(csvfile)
+              vulns_found = []
+              for row in reader:
+                  for col in ["CVSSv2_Severity", "CVSSv3_BaseSeverity", "CVSSv4_BaseSeverity"]:
+                      if row.get(col, "").strip().upper() in SEVERITIES:
+                          vulns_found.append(row)
+                          break
+          if vulns_found:
+              print(f"SCA: {len(vulns_found)} vulnerabilities found!")
+              for v in vulns_found:
+                  print(f"- {v.get('DependencyName','')} | Severity: {v.get('CVSSv2_Severity','')}/{v.get('CVSSv3_BaseSeverity','')}/{v.get('CVSSv4_BaseSeverity','')}")
+              sys.exit(1)
+          else:
+              print("No CRITICAL/HIGH/MEDIUM vulnerabilities found.")
+EOF
 
-          if [ -s sca_vulns.txt ]; then
-            echo "SCA: Vulnerabilities found! (listed below)"
-            cat sca_vulns.txt
-            exit 1
-          else
-            echo "No CRITICAL/HIGH/MEDIUM vulnerabilities found."
-            exit 0
-          fi
-
-      # --- Build Docker image ---
+      # 4️⃣ Build Docker image
       - name: Build Docker image
-        if: always()
-        run: |
-          docker build -t movies-app:latest .
+        run: docker build -t $DOCKER_IMAGE .
 
-      # --- Image Security: Trivy Scan ---
+      # 5️⃣ Image Security (Trivy)
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget tar
+          wget https://github.com/aquasecurity/trivy/releases/download/v0.44.0/trivy_0.44.0_Linux-64bit.deb
+          sudo dpkg -i trivy_0.44.0_Linux-64bit.deb
+
       - name: Scan Docker image with Trivy
-        if: always()
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "movies-app:latest"
-          format: "table"
-          exit-code: "1"
-          severity: "CRITICAL,HIGH,MEDIUM"
+        run: |
+          trivy image --severity CRITICAL,HIGH,MEDIUM $DOCKER_IMAGE
 
