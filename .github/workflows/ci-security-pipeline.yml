@@ -1,44 +1,73 @@
-name: CI MoviesApp Pipeline
+name: DevSecOps Pipeline
 
 on:
   push:
     branches:
       - main
-      - 'feature/*'
+      - '**'   # cualquier rama
   pull_request:
     branches:
       - main
 
 jobs:
-  ci-sec:
+  build-and-secure:
     runs-on: ubuntu-latest
     steps:
-      # 1. Clonar el repo
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      # 2. Prueba SAST con ESLint (simulación)
-      - name: Run ESLint (SAST simulation)
-        run: |
-          npm install eslint
-          npx eslint . || (echo "SAST found issues, failing!" && exit 1)
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
 
-      # 3. Prueba SCA con npm audit (simulación)
-      - name: Run npm audit (SCA simulation)
-        run: |
-          npm install
-          npm audit --audit-level=moderate || (echo "SCA found vulnerabilities, failing!" && exit 1)
+    - name: Install dependencies
+      run: npm install
 
-      # 4. Construcción de imagen Docker
-      - name: Build Docker image
-        run: |
-          docker build -t moviesapp:test .
+    # --------------------------
+    # SAST: ESLint
+    # --------------------------
+    - name: Setup ESLint config
+      run: |
+        echo '{
+          "env": {"browser": true,"node": true,"es2021": true},
+          "extends": "eslint:recommended",
+          "parserOptions": {"ecmaVersion": 12,"sourceType": "module"},
+          "rules": {"no-unused-vars": "error","no-console": "warn"}
+        }' > .eslintrc.json
 
-      # 5. Escaneo de imagen Docker con Trivy
-      - name: Scan Docker image
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: moviesapp:test
-          format: table
-          exit-code: 1
-          severity: CRITICAL,HIGH,MEDIUM
+    - name: Run ESLint SAST
+      run: npx eslint . --max-warnings=0
+
+    # --------------------------
+    # SCA: Dependency Check
+    # --------------------------
+    - name: Install Dependency-Check
+      run: npm install -g dependency-check
+
+    - name: Run Dependency Check
+      run: |
+        mkdir -p dependency-check-report
+        dependency-check --out dependency-check-report/dependency-check-report.json --json
+        # Fail on Critical/High/Medium
+        if grep -qE '"vulnerability":.*"(CRITICAL|HIGH|MEDIUM)"' dependency-check-report/dependency-check-report.json; then
+          echo "SCA found vulnerabilities. Failing pipeline."
+          exit 1
+        fi
+
+    # --------------------------
+    # Docker Build
+    # --------------------------
+    - name: Build Docker image
+      run: docker build -t moviesapp:latest .
+
+    # --------------------------
+    # Image Security: Trivy
+    # --------------------------
+    - name: Scan Docker image with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: moviesapp:latest
+        severity: CRITICAL,HIGH,MEDIUM
+        exit-code: 1
+
