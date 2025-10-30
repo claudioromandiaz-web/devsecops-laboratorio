@@ -33,7 +33,7 @@ jobs:
         with:
           project: "MoviesApp"
           path: "."
-          format: "ALL"
+          format: "HTML"
 
       - name: Fail if vulnerabilities found (SCA)
         if: always()
@@ -57,11 +57,13 @@ jobs:
 
       # --- Build Docker image ---
       - name: Build Docker image
+        if: always()
         run: |
           docker build -t movies-app:latest .
 
       # --- Image Security: Trivy Scan ---
       - name: Scan Docker image with Trivy
+        if: always()
         continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
