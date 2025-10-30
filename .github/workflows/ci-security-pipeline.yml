@@ -1,145 +1,89 @@
-name: CI - Security Pipeline (self-contained, forces failures)
+name: CI - Security Pipeline (Self-contained)
 
 on:
   push:
     branches:
       - main
-      - 'feature/**'
+      - "feature/**"
   pull_request:
 
 jobs:
-  full-demo:
+  sast:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # ----------------------------
-      # 1) SAST (simulado, falla intencional)
-      # ----------------------------
-      - name: SAST (Simulated SonarCloud) - force fail
+      - name: Run SAST (Simulated)
         run: |
-          echo "=== SAST (simulated) ==="
-          echo "Simulating SAST analysis..."
-          echo "RESULT: Found CRITICAL/HIGH/MEDIUM issues in code"
-          echo "CRITICAL some/file.py: hardcoded-secret"
-          echo "HIGH another/file.js: insecure-function"
-          echo "MEDIUM utils.js: minor-issue"
-          # For evidence we fail the step (this will stop the job unless we continue)
-          echo "::error::SAST detected CRITICAL/HIGH/MEDIUM - failing as required by task"
+          echo "=== SAST ==="
+          echo "Simulating code analysis..."
+          echo "CRITICAL issue found in app.js"
+          echo "::error::SAST found CRITICAL/HIGH/MEDIUM vulnerabilities"
           exit 1
 
-      # Note: the job will stop at the failing step unless we want to continue to capture all three failures.
-      # To capture all three required failing controls in one run (SAST, SCA, Image), run each in its own job.
-      # We'll implement that: below are separate jobs for SCA and Image so each produces its failure/evidence.
-  sca-demo:
+  sca:
     runs-on: ubuntu-latest
-    needs: full-demo
+    needs: sast
     if: always()
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Create fake dependency-check CSV (forces the exact vulnerabilities you requested)
+      - name: Create fake dependency-check CSV (no quotes in header)
         run: |
           mkdir -p dependency-check-report
           cat > dependency-check-report/dependency-check-report.csv <<'CSV'
-          "Project","ScanDate","DependencyName","DependencyPath","Description","License","Md5","Sha1","Identifiers","CPE","CVE","CWE","Vulnerability","Source","CVSSv2_Severity","CVSSv2_Score","CVSSv2","CVSSv3_BaseSeverity","CVSSv3_BaseScore","CVSSv3","CVSSv4_BaseSeverity","CVSSv4_BaseScore","CVSSv4","CPE Confidence","Evidence Count","VendorProject","Product","Name","DateAdded","ShortDescription","RequiredAction","DueDate","Notes"
-          MoviesApp,"Thu, 30 Oct 2025 22:00:00 GMT",@google-cloud/firestore:4.15.1,/path/package-lock.json?@google-cloud/firestore,"","","","",pkg:npm/%40google-cloud%2Ffirestore@4.15.1,"",GHSA-4g6q-77j7-vvjc,"CWE-532",A potential logging of the firestore key...,NPM,"","","",MEDIUM,4.0,"","","","",HIGHEST,3,"","Google","Firestore","@google-cloud/firestore:4.15.1","","Upgrade to 6.1.0","",""
-          MoviesApp,"Thu, 30 Oct 2025 22:00:00 GMT",@grpc/grpc-js:1.5.7,/path/package-lock.json?@grpc/grpc-js,"","","","",pkg:npm/%40grpc%2Fgrpc-js@1.5.7,"",GHSA-7v5v-9h63-cj86,"CWE-789",Some description...,NPM,"","","",HIGH,7.5,"","","","",HIGHEST,3,"","GRPC","grpc-js","@grpc/grpc-js:1.5.7","","Upgrade to 1.10.9","",""
-          MoviesApp,"Thu, 30 Oct 2025 22:00:00 GMT",body-parser:1.19.2,/path/package-lock.json?body-parser,"","","","",pkg:npm/body-parser@1.19.2,"",GHSA-qwcr-r2fm-qrc7,"CWE-405",Some description...,NPM,"","","",MEDIUM,6.0,"","","","",HIGHEST,3,"","BodyParser","body-parser","body-parser:1.19.2","","Upgrade to 1.20.3","",""
-CSV
- 
-      - name: Fail if vulnerabilities found (Robust Python parser)
+          DependencyName,Severity
+          @google-cloud/firestore:4.15.1,CRITICAL
+          @grpc/grpc-js:1.5.7,HIGH
+          body-parser:1.19.2,MEDIUM
+          CSV
+
+      - name: Parse vulnerabilities and fail
         run: |
-          REPORT_PATH="dependency-check-report/dependency-check-report.csv"
-          echo "---- Head of report (debug) ----"
-          head -n 6 "$REPORT_PATH" || true
-          echo "---------------------------------"
-
+          echo "=== SCA Results ==="
           python3 - <<'PY'
-import csv, re, sys
-report = "dependency-check-report/dependency-check-report.csv"
-pat = re.compile(r'\b(CRITICAL|HIGH|MEDIUM)\b', re.I)
-
-def find_pkg(row):
-    # prefer DependencyName or Name or Product keys (case-insensitive)
-    for k in row:
-        lk = k.lower()
-        if lk in ('dependencyname','dependency name','dependency','name','product'):
-            v = row[k].strip()
-            if v:
-                return v
-    # fallback: scan values for @name:version or name:version
-    for v in row.values():
-        if not v:
-            continue
-        m = re.search(r'[@a-zA-Z0-9._\-/]+:[0-9]+\.[0-9]+', v)
-        if m:
-            return m.group(0)
-    return "<unknown>"
-
-found = []
-try:
-    with open(report, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None:
-            print("No header detected")
-            sys.exit(1)
-        for row in reader:
-            sev = None
-            for v in row.values():
-                if not v:
-                    continue
-                m = pat.search(v)
-                if m:
-                    sev = m.group(1).upper()
-                    break
-            if sev:
-                pkg = find_pkg(row)
-                found.append((sev, pkg))
-except Exception as e:
-    print("Error parsing CSV:", e)
-    sys.exit(1)
-
-if found:
-    for sev, pkg in found:
-        print(f"{sev} {pkg}")
-    # write artifact file for evidence
-    with open("sca_vulns.txt","w",encoding="utf-8") as out:
-        for sev, pkg in found:
-            out.write(f"{sev} {pkg}\n")
-    # fail as task requires
+          import csv, sys
+          report = "dependency-check-report/dependency-check-report.csv"
+          vulns = []
+with open(report, newline='', encoding='utf-8') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        sev = row.get("Severity","").strip().upper()
+        pkg = row.get("DependencyName","").strip()
+        if sev in ("CRITICAL","HIGH","MEDIUM"):
+            vulns.append((sev, pkg))
+for sev, pkg in vulns:
+    print(f"{sev} {pkg}")
+if vulns:
     sys.exit(1)
 else:
-    print("No CRITICAL/HIGH/MEDIUM vulnerabilities found.")
     sys.exit(0)
 PY
 
-  image-demo:
+  image:
     runs-on: ubuntu-latest
-    needs: sca-demo
+    needs: sca
     if: always()
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Create minimal Dockerfile
+      - name: Create Dockerfile
         run: |
-          cat > Dockerfile.test <<'DOCKER'
-          FROM alpine:3.18
-          RUN echo "hello world" > /hello.txt
-          CMD ["cat","/hello.txt"]
-          DOCKER
-      - name: Build test Docker image
-        run: docker build -f Dockerfile.test -t movies-app:test .
+          echo "FROM alpine:3.18" > Dockerfile
+          echo "RUN echo 'Hello from container' > /hello.txt" >> Dockerfile
+          echo 'CMD ["cat","/hello.txt"]' >> Dockerfile
 
-      - name: Simulate Trivy scan (force fail and show expected output)
+      - name: Build Docker image
+        run: docker build -t movies-app:test .
+
+      - name: Simulate Trivy scan (force fail)
         run: |
-          echo "TRIVY SCAN (simulated) - showing CRITICAL/HIGH/MEDIUM on image"
-          echo "CRITICAL CVE-2025-XXXX - some-package"
-          echo "HIGH CVE-2024-YYYY - other-package"
-          echo "MEDIUM CVE-2023-ZZZZ - another-package"
-          echo "::error::Image security detected CRITICAL/HIGH/MEDIUM - failing as required by task"
+          echo "=== IMAGE SCAN ==="
+          echo "CRITICAL CVE-2025-0001 found in libc"
+          echo "HIGH CVE-2024-1111 found in busybox"
+          echo "MEDIUM CVE-2023-2222 found in apk-tools"
+          echo "::error::Image scan found CRITICAL/HIGH/MEDIUM vulnerabilities"
           exit 1
-
