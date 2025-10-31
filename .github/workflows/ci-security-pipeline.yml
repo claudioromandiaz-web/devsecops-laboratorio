@@ -19,7 +19,7 @@ jobs:
       - name: Simulate SAST Scan
         id: sast
         run: |
-          echo "CRITICAL src/app.js:1 Some issue" > sast-report.txt
+          echo "CRITICAL src/app.js:1 Some issue" >> sast-report.txt
           echo "HIGH src/index.js:5 Another issue" >> sast-report.txt
           echo "MEDIUM src/utils.js:2 Minor issue" >> sast-report.txt
           echo "SAST vulnerabilities:"
