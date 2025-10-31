@@ -42,16 +42,16 @@ jobs:
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
           echo "SCA vulnerabilities:"
           any_vulns=false
-          tail -n +2 "$REPORT_PATH" | while IFS=',' read -r project date dep severity; do
-            dep=$(echo $dep | tr -d '"')
-            severity=$(echo $severity | tr -d '"')
+          mapfile -t lines < <(tail -n +2 "$REPORT_PATH")
+          for line in "${lines[@]}"; do
+            dep=$(echo $line | cut -d',' -f3 | tr -d '"')
+            severity=$(echo $line | cut -d',' -f4 | tr -d '"')
             if [[ "$severity" =~ CRITICAL|HIGH|MEDIUM ]]; then
               echo "$severity $dep"
               any_vulns=true
             fi
           done
-          # Verificar fuera del while para que GitHub Actions capture el exit code
-          if grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
+          if [ "$any_vulns" = true ]; then
             echo "SCA: Vulnerabilities found! Failing pipeline."
             exit 1
           else
