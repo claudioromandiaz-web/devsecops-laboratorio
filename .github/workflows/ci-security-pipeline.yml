@@ -10,81 +10,51 @@ on:
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
-
     steps:
-    # 1. Checkout code
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    # 2. SAST: SonarCloud (simulado para prueba si no hay token)
-    - name: Simulate SAST vulnerabilities
-      run: |
-        echo "CRITICAL src/app.js:1 Some issue" > sast-report.txt
-        echo "HIGH src/index.js:5 Another issue" >> sast-report.txt
-        echo "MEDIUM src/utils.js:2 Minor issue" >> sast-report.txt
+      # --- SAST: Simulación ---
+      - name: Run SAST Scan (Simulated)
+        id: sast
+        run: |
+          echo "CRITICAL src/app.js:1 Some issue" > sast-vulns.txt
+          echo "HIGH src/index.js:5 Another issue" >> sast-vulns.txt
+          echo "MEDIUM src/utils.js:2 Minor issue" >> sast-vulns.txt
+          cat sast-vulns.txt
+          exit 1  # Forzar fallo para prueba
 
-    # 3. SCA: Dependency-Check
-    - name: Run OWASP Dependency-Check
-      uses: dependency-check/Dependency-Check_Action@main
-      with:
-        project: "MoviesApp"
-        path: "."
-        format: "CSV"
-        out: "dependency-check-report"
+      # --- SCA: Dependency-Check ---
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "MoviesApp"
+          path: "."
+          format: "CSV"
+          out: "dependency-check-report"
 
-    - name: Parse SCA vulnerabilities
-      run: |
-        mkdir -p sca
-        REPORT="dependency-check-report/dependency-check-report.csv"
-        grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT" | awk -F',' '{gsub(/"/,"",$2); gsub(/"/,"",$3); print $3, $2}' > sca-vulns.txt
-
-    # 4. Build Docker image
-    - name: Build Docker image
-      run: docker build -t movies-app:latest .
-
-    # 5. Image Security: Trivy Scan
-    - name: Scan Docker image with Trivy
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: "movies-app:latest"
-        format: "table"
-        exit-code: "1"
-      continue-on-error: true
-      # Save Trivy output
-    - name: Save Trivy results
-      if: always()
-      run: trivy image --severity CRITICAL,HIGH,MEDIUM --no-progress --format table movies-app:latest > trivy-results.txt || true
-
-    # 6. Fail if any vulnerabilities found
-    - name: Fail if vulnerabilities found
-      run: |
-        any_vulns=false
-
-        # SAST
-        if [ -f sast-report.txt ] && [ -s sast-report.txt ]; then
-          echo "SAST vulnerabilities:"
-          cat sast-report.txt
-          any_vulns=true
-        fi
-
-        # SCA
-        if [ -f sca-vulns.txt ] && [ -s sca-vulns.txt ]; then
+      - name: Fail if SCA vulnerabilities found
+        run: |
+          REPORT="dependency-check-report/dependency-check-report.csv"
+          if [ ! -f "$REPORT" ]; then
+            echo "SCA report not found!"
+            exit 1
+          fi
           echo "SCA vulnerabilities:"
-          cat sca-vulns.txt
-          any_vulns=true
-        fi
+          grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT" | awk -F',' 'NR>1 {gsub(/"/,"",$3); gsub(/"/,"",$19); print $19, $3}' 
+          if grep -q -E "CRITICAL|HIGH|MEDIUM" "$REPORT"; then
+            exit 1
+          fi
 
-        # Trivy
-        if [ -f trivy-results.txt ] && [ -s trivy-results.txt ]; then
-          echo "Image vulnerabilities (Trivy):"
-          cat trivy-results.txt
-          any_vulns=true
-        fi
+      # --- Build Docker image ---
+      - name: Build Docker image
+        run: docker build -t movies-app:latest .
 
-        # Fail pipeline if any vulnerabilities
-        if [ "$any_vulns" = true ]; then
-          echo "Vulnerabilities detected. Failing pipeline."
-          exit 1
-        else
-          echo "No vulnerabilities found."
-        fi
+      # --- Image Security: Trivy Scan ---
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "movies-app:latest"
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH,MEDIUM"
