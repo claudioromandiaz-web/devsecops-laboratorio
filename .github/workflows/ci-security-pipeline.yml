@@ -11,9 +11,11 @@ jobs:
   build-and-scan:
     runs-on: ubuntu-latest
     steps:
+      # --- Clonar el repositorio ---
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # --- SAST Simulado ---
       - name: Simulate SAST Scan
         id: sast
         run: |
@@ -26,6 +28,7 @@ jobs:
             exit 1
           fi
 
+      # --- SCA: Dependency Check ---
       - name: Run OWASP Dependency-Check
         run: |
           mkdir -p dependency-check-report
@@ -38,27 +41,29 @@ jobs:
         run: |
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
           echo "SCA vulnerabilities:"
-          any_vulns=0
+          any_vulns=false
           mapfile -t lines < <(tail -n +2 "$REPORT_PATH")
           for line in "${lines[@]}"; do
             dep=$(echo $line | cut -d',' -f3 | tr -d '"')
             severity=$(echo $line | cut -d',' -f4 | tr -d '"')
             if [[ "$severity" =~ CRITICAL|HIGH|MEDIUM ]]; then
               echo "$severity $dep"
-              any_vulns=1
+              any_vulns=true
             fi
           done
-          if [[ $any_vulns -eq 1 ]]; then
+          if [ "$any_vulns" = true ]; then
             echo "SCA: Vulnerabilities found! Failing pipeline."
             exit 1
           else
             echo "No vulnerabilities found."
           fi
 
+      # --- Build Docker Image ---
       - name: Build Docker image
         run: |
           docker build -t movies-app:latest .
 
+      # --- Image Security: Trivy Scan ---
       - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
