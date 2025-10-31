@@ -19,7 +19,7 @@ jobs:
       - name: Simulate SAST Scan
         id: sast
         run: |
-          echo "CRITICAL src/app.js:1 Some issue" >> sast-report.txt
+          echo "CRITICAL src/app.js:1 Some issue" > sast-report.txt
           echo "HIGH src/index.js:5 Another issue" >> sast-report.txt
           echo "MEDIUM src/utils.js:2 Minor issue" >> sast-report.txt
           echo "SAST vulnerabilities:"
@@ -42,17 +42,16 @@ jobs:
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
           echo "SCA vulnerabilities:"
           any_vulns=false
-          # Leer CSV evitando la cabecera
-          mapfile -t lines < <(tail -n +2 "$REPORT_PATH")
-          for line in "${lines[@]}"; do
-            dep=$(echo "$line" | awk -F',' '{gsub(/"/,"",$3); print $3}')
-            severity=$(echo "$line" | awk -F',' '{gsub(/"/,"",$4); print $4}')
+          tail -n +2 "$REPORT_PATH" | while IFS=',' read -r project date dep severity; do
+            dep=$(echo $dep | tr -d '"')
+            severity=$(echo $severity | tr -d '"')
             if [[ "$severity" =~ CRITICAL|HIGH|MEDIUM ]]; then
               echo "$severity $dep"
               any_vulns=true
             fi
           done
-          if [ "$any_vulns" = true ]; then
+          # Verificar fuera del while para que GitHub Actions capture el exit code
+          if grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT_PATH"; then
             echo "SCA: Vulnerabilities found! Failing pipeline."
             exit 1
           else
