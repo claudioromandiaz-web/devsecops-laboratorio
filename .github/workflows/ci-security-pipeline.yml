@@ -10,79 +10,81 @@ on:
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
+
     steps:
+    # 1. Checkout code
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      # --- Checkout code ---
-      - name: Checkout code
-        uses: actions/checkout@v3
+    # 2. SAST: SonarCloud (simulado para prueba si no hay token)
+    - name: Simulate SAST vulnerabilities
+      run: |
+        echo "CRITICAL src/app.js:1 Some issue" > sast-report.txt
+        echo "HIGH src/index.js:5 Another issue" >> sast-report.txt
+        echo "MEDIUM src/utils.js:2 Minor issue" >> sast-report.txt
 
-      # --- SAST: Simulación ---
-      - name: Simular vulnerabilidades SAST
-        id: sast
-        run: |
-          echo "CRITICAL src/app.js:1 Some issue" > sast-report.txt
-          echo "HIGH src/index.js:5 Another issue" >> sast-report.txt
-          echo "MEDIUM src/utils.js:2 Minor issue" >> sast-report.txt
+    # 3. SCA: Dependency-Check
+    - name: Run OWASP Dependency-Check
+      uses: dependency-check/Dependency-Check_Action@main
+      with:
+        project: "MoviesApp"
+        path: "."
+        format: "CSV"
+        out: "dependency-check-report"
 
-      # --- SCA: OWASP Dependency-Check ---
-      - name: Run OWASP Dependency-Check
-        id: sca
-        uses: dependency-check/Dependency-Check_Action@main
-        with:
-          project: "MoviesApp"
-          path: "."
-          format: "CSV"
-          out: "dependency-check-report"
+    - name: Parse SCA vulnerabilities
+      run: |
+        mkdir -p sca
+        REPORT="dependency-check-report/dependency-check-report.csv"
+        grep -E "CRITICAL|HIGH|MEDIUM" "$REPORT" | awk -F',' '{gsub(/"/,"",$2); gsub(/"/,"",$3); print $3, $2}' > sca-vulns.txt
 
-      - name: Parse SCA results
-        id: parse-sca
-        run: |
-          REPORT_PATH="dependency-check-report/dependency-check-report.csv"
-          if [ -f "$REPORT_PATH" ]; then
-            awk -F',' 'NR>1 && ($12=="CRITICAL"||$12=="HIGH"||$12=="MEDIUM") {gsub(/"/,"",$3); print $12 " " $3}' "$REPORT_PATH" > sca-vulns.txt
-          else
-            touch sca-vulns.txt
-          fi
+    # 4. Build Docker image
+    - name: Build Docker image
+      run: docker build -t movies-app:latest .
 
-      # --- Build Docker image ---
-      - name: Build Docker image
-        run: |
-          docker build -t movies-app:latest .
+    # 5. Image Security: Trivy Scan
+    - name: Scan Docker image with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: "movies-app:latest"
+        format: "table"
+        exit-code: "1"
+      continue-on-error: true
+      # Save Trivy output
+    - name: Save Trivy results
+      if: always()
+      run: trivy image --severity CRITICAL,HIGH,MEDIUM --no-progress --format table movies-app:latest > trivy-results.txt || true
 
-      # --- Image Security: Trivy Scan ---
-      - name: Scan Docker image with Trivy
-        id: trivy
-        run: |
-          trivy image --severity CRITICAL,HIGH,MEDIUM --exit-code 1 --format table movies-app:latest > trivy-results.txt || true
+    # 6. Fail if any vulnerabilities found
+    - name: Fail if vulnerabilities found
+      run: |
+        any_vulns=false
 
-      # --- Final Step: Fail pipeline if any vulnerabilities ---
-      - name: Fail if vulnerabilities found
-        run: |
-          any_vulns=false
+        # SAST
+        if [ -f sast-report.txt ] && [ -s sast-report.txt ]; then
+          echo "SAST vulnerabilities:"
+          cat sast-report.txt
+          any_vulns=true
+        fi
 
-          # SAST
-          if [ -f sast-report.txt ] && [ -s sast-report.txt ]; then
-            echo "SAST vulnerabilities:"
-            cat sast-report.txt
-            any_vulns=true
-          fi
+        # SCA
+        if [ -f sca-vulns.txt ] && [ -s sca-vulns.txt ]; then
+          echo "SCA vulnerabilities:"
+          cat sca-vulns.txt
+          any_vulns=true
+        fi
 
-          # SCA
-          if [ -f sca-vulns.txt ] && [ -s sca-vulns.txt ]; then
-            echo "SCA vulnerabilities:"
-            cat sca-vulns.txt
-            any_vulns=true
-          fi
+        # Trivy
+        if [ -f trivy-results.txt ] && [ -s trivy-results.txt ]; then
+          echo "Image vulnerabilities (Trivy):"
+          cat trivy-results.txt
+          any_vulns=true
+        fi
 
-          # Trivy
-          if [ -f trivy-results.txt ] && [ -s trivy-results.txt ]; then
-            echo "Image vulnerabilities (Trivy):"
-            cat trivy-results.txt
-            any_vulns=true
-          fi
-
-          if [ "$any_vulns" = true ]; then
-            echo "Vulnerabilities detected. Failing pipeline."
-            exit 1
-          else
-            echo "No vulnerabilities found."
+        # Fail pipeline if any vulnerabilities
+        if [ "$any_vulns" = true ]; then
+          echo "Vulnerabilities detected. Failing pipeline."
+          exit 1
+        else
+          echo "No vulnerabilities found."
+        fi
