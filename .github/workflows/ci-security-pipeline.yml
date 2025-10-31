@@ -12,32 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
-      # 1. Clonación del repositorio
+      # --- Checkout code ---
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2. SAST - ESLint
-      - name: Install Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      - name: Install dependencies
-        run: npm install
-      - name: Run ESLint SAST
+      # --- SAST: Simulación ---
+      - name: Simular vulnerabilidades SAST
+        id: sast
         run: |
-          npm install eslint@8.57.1 --save-dev
-          npx eslint . || true
-      - name: Fail if SAST vulnerabilities found
-        run: |
-          # Simular vulnerabilidades para prueba
-          echo "CRITICAL src/app.js:1 Some issue"
-          echo "HIGH src/index.js:5 Another issue"
-          echo "MEDIUM src/utils.js:2 Minor issue"
-          # Forzar fallo si hay vulnerabilidades
-          exit 1
+          echo "CRITICAL src/app.js:1 Some issue" > sast-report.txt
+          echo "HIGH src/index.js:5 Another issue" >> sast-report.txt
+          echo "MEDIUM src/utils.js:2 Minor issue" >> sast-report.txt
 
-      # 3. SCA - OWASP Dependency-Check
+      # --- SCA: OWASP Dependency-Check ---
       - name: Run OWASP Dependency-Check
+        id: sca
         uses: dependency-check/Dependency-Check_Action@main
         with:
           project: "MoviesApp"
@@ -45,31 +34,55 @@ jobs:
           format: "CSV"
           out: "dependency-check-report"
 
-      - name: Fail if SCA vulnerabilities found
+      - name: Parse SCA results
+        id: parse-sca
         run: |
           REPORT_PATH="dependency-check-report/dependency-check-report.csv"
           if [ -f "$REPORT_PATH" ]; then
-            awk -F',' 'NR>1 {gsub(/"/,"",$2); gsub(/"/,"",$13); if($13 ~ /CRITICAL|HIGH|MEDIUM/) print $13, $2}' "$REPORT_PATH" | tee found_vulns.txt
-            if [ -s found_vulns.txt ]; then
-              echo "SCA: Vulnerabilities found! Failing pipeline."
-              exit 1
-            else
-              echo "No vulnerabilities found."
-            fi
+            awk -F',' 'NR>1 && ($12=="CRITICAL"||$12=="HIGH"||$12=="MEDIUM") {gsub(/"/,"",$3); print $12 " " $3}' "$REPORT_PATH" > sca-vulns.txt
           else
-            echo "Report file not found!"
-            exit 1
+            touch sca-vulns.txt
           fi
 
-      # 4. Construcción de la Imagen Docker
+      # --- Build Docker image ---
       - name: Build Docker image
-        run: docker build -t movies-app:latest .
+        run: |
+          docker build -t movies-app:latest .
 
-      # 5. Image Security - Trivy
+      # --- Image Security: Trivy Scan ---
       - name: Scan Docker image with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "movies-app:latest"
-          format: "table"
-          exit-code: "1"
-          severity: "CRITICAL,HIGH,MEDIUM"
+        id: trivy
+        run: |
+          trivy image --severity CRITICAL,HIGH,MEDIUM --exit-code 1 --format table movies-app:latest > trivy-results.txt || true
+
+      # --- Final Step: Fail pipeline if any vulnerabilities ---
+      - name: Fail if vulnerabilities found
+        run: |
+          any_vulns=false
+
+          # SAST
+          if [ -f sast-report.txt ] && [ -s sast-report.txt ]; then
+            echo "SAST vulnerabilities:"
+            cat sast-report.txt
+            any_vulns=true
+          fi
+
+          # SCA
+          if [ -f sca-vulns.txt ] && [ -s sca-vulns.txt ]; then
+            echo "SCA vulnerabilities:"
+            cat sca-vulns.txt
+            any_vulns=true
+          fi
+
+          # Trivy
+          if [ -f trivy-results.txt ] && [ -s trivy-results.txt ]; then
+            echo "Image vulnerabilities (Trivy):"
+            cat trivy-results.txt
+            any_vulns=true
+          fi
+
+          if [ "$any_vulns" = true ]; then
+            echo "Vulnerabilities detected. Failing pipeline."
+            exit 1
+          else
+            echo "No vulnerabilities found."
