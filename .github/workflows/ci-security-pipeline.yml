@@ -1,4 +1,5 @@
 name: CI - Security Pipeline
+
 on:
   push:
     branches:
@@ -10,23 +11,21 @@ jobs:
   build-and-scan:
     runs-on: ubuntu-latest
     steps:
-      # --- Clonar repositorio ---
+      # --- Clonación del código ---
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # --- SAST: Simulación de SonarCloud ---
-      - name: SonarCloud Scan
-        continue-on-error: true
+      # --- SAST: SonarCloud / Simulación ---
+      - name: Run SAST simulation
         run: |
-          echo "Simulando vulnerabilidades SAST"
+          echo "Simulando vulnerabilidades SAST..."
           echo "CRITICAL src/app.js:1 Some issue"
           echo "HIGH src/index.js:5 Another issue"
           echo "MEDIUM src/utils.js:2 Minor issue"
-          exit 1
+          exit 1  # Fuerza fallo para pruebas
 
-      # --- SCA: Dependency Check ---
+      # --- SCA: OWASP Dependency-Check ---
       - name: Run OWASP Dependency-Check
-        continue-on-error: true
         uses: dependency-check/Dependency-Check_Action@main
         with:
           project: "MoviesApp"
@@ -47,45 +46,29 @@ jobs:
           echo "SCA vulnerabilities:"
           any_vulns=false
 
-          awk -F',' '
-            NR>1 {
-              pkg=""
-              if($0 ~ /CRITICAL|HIGH|MEDIUM/){
-                for(i=1;i<=NF;i++){
-                  if($i ~ /@?[a-zA-Z0-9._\-]+:[0-9]+\.[0-9]+/){
-                    gsub(/"/,"",$i)
-                    pkg=$i
-                    break
-                  }
-                }
-                if(pkg!=""){
-                  if($0 ~ /CRITICAL/){sev="CRITICAL"}
-                  else if($0 ~ /HIGH/){sev="HIGH"}
-                  else if($0 ~ /MEDIUM/){sev="MEDIUM"}
-                  print sev " " pkg
-                  any_vulns=true
-                }
-              }
-            }
-          ' "$REPORT_PATH"
+          tail -n +2 "$REPORT_PATH" | while IFS=',' read -r Project ScanDate DependencyName _rest; do
+            DependencyName=$(echo "$DependencyName" | tr -d '"')
+            # Aquí filtramos CRITICAL/HIGH/MEDIUM
+            severity=$(echo "$DependencyName" | grep -o -E "CRITICAL|HIGH|MEDIUM" || true)
+            if [ -n "$severity" ]; then
+              echo "$severity $DependencyName"
+              any_vulns=true
+            fi
+          done
 
           if [ "$any_vulns" = true ]; then
             echo "SCA: Vulnerabilities found! Failing pipeline."
             exit 1
           else
             echo "No vulnerabilities found in SCA."
-          fi
 
-      # --- Build Docker image ---
+      # --- Construcción de Docker ---
       - name: Build Docker image
-        if: always()
         run: |
           docker build -t movies-app:latest .
 
-      # --- Image Security: Trivy Scan ---
+      # --- Image Security: Trivy ---
       - name: Scan Docker image with Trivy
-        if: always()
-        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: "movies-app:latest"
